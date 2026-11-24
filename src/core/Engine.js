@@ -155,8 +155,12 @@ var Body = require('../body/Body');
         Pairs.update(pairs, collisions, timestamp);
 
         // wake up bodies involved in collisions
-        if (engine.enableSleeping)
+        if (engine.enableSleeping) {
             Sleeping.afterCollisions(pairs.list);
+
+            // wake all bodies in the same constraint groups as any awake body
+            Sleeping.wakeConstraints(allConstraints);
+        }
 
         // trigger collision events
         if (pairs.collisionStart.length > 0) {

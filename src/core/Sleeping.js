@@ -95,6 +95,98 @@ var Common = require('./Common');
     };
   
     /**
+     * Wakes every sleeping body in the constraint connected groups of any
+     * awake body. Bodies joined by constraints form a graph, so when one body
+     * in a group is woken (e.g. by a collision, an applied force or a drag)
+     * the whole group is woken in the same update, while sleeping bodies in
+     * other disconnected groups are left untouched.
+     * @method wakeConstraints
+     * @param {constraint[]} constraints
+     */
+    Sleeping.wakeConstraints = function(constraints) {
+        // build the constraint graph of dynamic bodies as an adjacency list
+        var neighbours = {};
+
+        for (var i = 0; i < constraints.length; i++) {
+            var constraint = constraints[i],
+                bodyA = constraint.bodyA,
+                bodyB = constraint.bodyB;
+
+            // constraints anchored to the world or a static body cannot
+            // propagate a wake between dynamic bodies
+            if (!bodyA || !bodyB || bodyA.isStatic || bodyB.isStatic)
+                continue;
+
+            if (!neighbours[bodyA.id]) {
+                neighbours[bodyA.id] = [];
+            }
+
+            neighbours[bodyA.id].push(bodyB);
+
+            if (!neighbours[bodyB.id]) {
+                neighbours[bodyB.id] = [];
+            }
+
+            neighbours[bodyB.id].push(bodyA);
+        }
+
+        // flood fill from each awake body across its constraint group
+        var visited = {};
+
+        for (i = 0; i < constraints.length; i++) {
+            constraint = constraints[i];
+            bodyA = constraint.bodyA;
+            bodyB = constraint.bodyB;
+
+            if (bodyA && !bodyA.isStatic && !bodyA.isSleeping && !visited[bodyA.id]) {
+                Sleeping._wakeGroup(bodyA, neighbours, visited);
+            }
+
+            if (bodyB && !bodyB.isStatic && !bodyB.isSleeping && !visited[bodyB.id]) {
+                Sleeping._wakeGroup(bodyB, neighbours, visited);
+            }
+        }
+    };
+
+    /**
+     * Wakes the constraint connected group of the given body using a
+     * breadth first search, recording traversed bodies in `visited` so each
+     * group is only traversed once per call.
+     * @method _wakeGroup
+     * @private
+     * @param {body} startBody
+     * @param {object} neighbours
+     * @param {object} visited
+     */
+    Sleeping._wakeGroup = function(startBody, neighbours, visited) {
+        var queue = [startBody];
+        visited[startBody.id] = true;
+
+        while (queue.length > 0) {
+            var body = queue.shift(),
+                bodyNeighbours = neighbours[body.id];
+
+            if (!bodyNeighbours)
+                continue;
+
+            for (var i = 0; i < bodyNeighbours.length; i++) {
+                var neighbour = bodyNeighbours[i];
+
+                if (visited[neighbour.id])
+                    continue;
+
+                visited[neighbour.id] = true;
+
+                if (neighbour.isSleeping) {
+                    Sleeping.set(neighbour, false);
+                }
+
+                queue.push(neighbour);
+            }
+        }
+    };
+
+    /**
      * Set a body as sleeping or awake.
      * @method set
      * @param {body} body
