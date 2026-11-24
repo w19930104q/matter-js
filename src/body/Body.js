@@ -385,8 +385,12 @@ var Axes = require('../geometry/Axes');
      * 
      * See Bodies.fromVertices for a related utility.
      * 
-     * This function updates `body` mass, inertia and centroid based on the parts geometry.  
-     * Sets each `part.parent` to be this `body`.  
+     * This function updates `body` mass, inertia and centroid based on the parts geometry.
+     * Sets each `part.parent` to be this `body`.
+     *
+     * The parts are kept fixed in world space while the parent centroid moves to the new
+     * centre of mass, the parent bounds are refreshed to match the same world space and
+     * the parent linear velocity is preserved unchanged.
      * 
      * The convex hull is computed and set on this `body` (unless `autoHull` is `false`).  
      * Automatically ensures that the first part in `body.parts` is the `body`.
@@ -415,13 +419,53 @@ var Axes = require('../geometry/Axes');
         if (body.parts.length === 1)
             return;
 
+        // recompute mass, inertia, centroid, hull, bounds and velocity in a single
+        // atomic step, so that replacing parts preserves velocity and world bounds
         autoHull = typeof autoHull !== 'undefined' ? autoHull : true;
+        Body._recompose(body, autoHull);
+    };
 
-        // find the convex hull of all parts to set on the parent body
-        if (autoHull) {
+    /**
+     * Recomputes all of the parent `body` properties from its current `body.parts`
+     * in a single atomic step.
+     *
+     * The parts are kept fixed in world space (their positions and vertices are not moved),
+     * while the parent centroid is moved to the centre of mass of the parts.
+     * As with all Matter.js bodies, the parent hull vertices are stored in world space,
+     * so the parent bounds describe the same world space as the parts and do not drift
+     * when the centre of mass moves.
+     * The parent linear velocity is carried over unchanged, so replacing or removing
+     * parts does not reset the body's motion.
+     *
+     * @method _recompose
+     * @private
+     * @param {body} body
+     * @param {bool} [autoHull=true]
+     */
+    Body._recompose = function(body, autoHull) {
+        // capture the current velocity so it can be restored after the centroid moves
+        var velocity = Body.getVelocity(body);
+
+        // sum the properties of all compound parts of the parent body
+        var total = Body._totalProperties(body);
+
+        body.area = total.area;
+        body.parent = body;
+
+        // move only the parent to the new centre of mass first, keeping every part fixed
+        // in world space (set positionPrev equal so no velocity is inferred yet).
+        // setVertices below translates new vertices by body.position, so positioning the
+        // parent first makes the resulting hull land at its correct world position
+        body.positionPrev.x = total.centre.x;
+        body.positionPrev.y = total.centre.y;
+        body.position.x = total.centre.x;
+        body.position.y = total.centre.y;
+
+        // find the convex hull of all parts, the hull vertices are in world space here
+        if (autoHull !== false) {
             var vertices = [];
-            for (i = 0; i < parts.length; i++) {
-                vertices = vertices.concat(parts[i].vertices);
+            for (var i = 1; i < body.parts.length; i++) {
+                vertices = vertices.concat(body.parts[i].vertices);
             }
 
             Vertices.clockwiseSort(vertices);
@@ -429,27 +473,84 @@ var Axes = require('../geometry/Axes');
             var hull = Vertices.hull(vertices),
                 hullCentre = Vertices.centre(hull);
 
+            // setVertices centres the hull about its origin (updating area, axes, mass and
+            // inertia) and then translates it by the parent position
             Body.setVertices(body, hull);
-            Vertices.translate(body.vertices, hullCentre);
+
+            // the hull is defined in world space, so undo the parent-position translation
+            // applied in setVertices and place the hull at its captured world centre.
+            // the hullCentre is captured first because setVertices mutates the hull points
+            Vertices.translate(body.vertices, {
+                x: hullCentre.x - total.centre.x,
+                y: hullCentre.y - total.centre.y
+            });
         }
-
-        // sum the properties of all compound parts of the parent body
-        var total = Body._totalProperties(body);
-
-        body.area = total.area;
-        body.parent = body;
-        body.position.x = total.centre.x;
-        body.position.y = total.centre.y;
-        body.positionPrev.x = total.centre.x;
-        body.positionPrev.y = total.centre.y;
 
         Body.setMass(body, total.mass);
         Body.setInertia(body, total.inertia);
-        Body.setPosition(body, total.centre);
+
+        // the parent hull is in world space, so refresh the world bounds directly
+        Bounds.update(body.bounds, body.vertices);
+
+        // restore the velocity carried over from before the parts changed
+        Body.setVelocity(body, velocity);
     };
 
     /**
-     * Set the centre of mass of the body. 
+     * Atomically replaces a single part of a compound `body`.
+     *
+     * If `newPart` is a body, it replaces `oldPart`; if it is `null` or `undefined`
+     * then `oldPart` is removed instead. The mass, inertia, centre of mass, hull,
+     * bounds and linear velocity of the parent `body` are recomputed in a single step,
+     * so replacing or removing parts preserves the body's motion and keeps the
+     * remaining parts fixed in world space.
+     *
+     * If the replacement is invalid (e.g. a circle part with an invalid radius)
+     * then the function returns `false` and the body is left completely unchanged.
+     *
+     * @method replacePart
+     * @param {body} body
+     * @param {body} oldPart
+     * @param {body} [newPart]
+     * @param {bool} [autoHull=true]
+     * @return {bool} `true` if the part was replaced or removed, otherwise `false`
+     */
+    Body.replacePart = function(body, oldPart, newPart, autoHull) {
+        // validate the incoming part before touching the body,
+        // so a failure leaves the existing parts unchanged
+        if (typeof newPart !== 'undefined' && newPart !== null) {
+            var radius = newPart.circleRadius;
+
+            // circleRadius 0 or null means the part is not a circle,
+            // an actual circle must have a positive finite radius
+            if (typeof radius === 'number' && radius !== 0 && !(radius > 0)) {
+                Common.warn('Body.replacePart: newPart has an invalid circleRadius.');
+                return false;
+            }
+        }
+
+        var parts = body.parts.slice(1),
+            index = parts.indexOf(oldPart);
+
+        if (index === -1) {
+            Common.warn('Body.replacePart: oldPart was not found in body.parts.');
+            return false;
+        }
+
+        if (newPart === null || typeof newPart === 'undefined') {
+            parts.splice(index, 1);
+        } else {
+            parts[index] = newPart;
+        }
+
+        // recompute mass, inertia, centroid, hull, bounds and velocity atomically
+        Body.setParts(body, parts, autoHull);
+
+        return true;
+    };
+
+    /**
+     * Set the centre of mass of the body.
      * The `centre` is a vector in world-space unless `relative` is set, in which case it is a translation.
      * The centre of mass is the point the body rotates about and can be used to simulate non-uniform density.
      * This is equal to moving `body.position` but not the `body.vertices`.
