@@ -123,6 +123,75 @@ var Common = require('../core/Common');
     };
 
     /**
+     * Removes all pairs that involve the given body from the pairs structure,
+     * including any entries staged in the current timestep collision event lists.
+     * Used to keep the pair cache consistent when a body is removed from the
+     * world mid-update (e.g. inside a `collisionStart` event handler).
+     *
+     * Compound bodies are handled by matching against any of their parts,
+     * since pairs store the colliding parts rather than the parent body.
+     * @method removeBody
+     * @param {pairs} pairs
+     * @param {body} body
+     */
+    Pairs.removeBody = function(pairs, body) {
+        var pairsTable = pairs.table,
+            pairsList = pairs.list,
+            collisionStart = pairs.collisionStart,
+            collisionActive = pairs.collisionActive,
+            collisionEnd = pairs.collisionEnd,
+            removedParts = body.parts || [body],
+            pair,
+            i,
+            j;
+
+        var involvesBody = function(pair) {
+            if (pair.bodyA === body || pair.bodyB === body) {
+                return true;
+            }
+
+            // compound bodies: the pair stores the colliding part
+            for (j = 0; j < removedParts.length; j++) {
+                var part = removedParts[j];
+
+                if (pair.bodyA === part || pair.bodyB === part) {
+                    return true;
+                }
+            }
+
+            return false;
+        };
+
+        // remove from the active list and the lookup table
+        for (i = pairsList.length - 1; i >= 0; i--) {
+            pair = pairsList[i];
+
+            if (involvesBody(pair)) {
+                pair.isActive = false;
+                delete pairsTable[pair.id];
+                pairsList.splice(i, 1);
+            }
+        }
+
+        // remove from every event list staged for the current timestep
+        var removeFromEventList = function(list) {
+            var writeIndex = 0;
+
+            for (i = 0; i < list.length; i++) {
+                if (!involvesBody(list[i])) {
+                    list[writeIndex++] = list[i];
+                }
+            }
+
+            list.length = writeIndex;
+        };
+
+        removeFromEventList(collisionStart);
+        removeFromEventList(collisionActive);
+        removeFromEventList(collisionEnd);
+    };
+
+    /**
      * Clears the given pairs structure.
      * @method clear
      * @param {pairs} pairs

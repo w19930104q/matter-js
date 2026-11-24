@@ -118,6 +118,11 @@ var Body = require('../body/Body');
         var allBodies = Composite.allBodies(world),
             allConstraints = Composite.allConstraints(world);
 
+        // snapshot the bodies present before any update event handler can
+        // mutate the world, so bodies removed mid-update can be reconciled
+        // against the pair cache and the detector later in this same step
+        var bodiesAtStart = allBodies.slice(0);
+
         // if the world has changed
         if (world.isModified) {
             // update the detector bodies
@@ -160,12 +165,17 @@ var Body = require('../body/Body');
 
         // trigger collision events
         if (pairs.collisionStart.length > 0) {
-            Events.trigger(engine, 'collisionStart', { 
+            Events.trigger(engine, 'collisionStart', {
                 pairs: pairs.collisionStart,
                 timestamp: timing.timestamp,
                 delta: delta
             });
         }
+
+        // reconcile bodies removed from the world during the collision events
+        // (or any earlier handler this step), so that the remaining collision
+        // events, the pair cache and world queries all see the same state
+        Engine._reconcileRemovedBodies(engine, bodiesAtStart);
 
         // iteratively resolve position between collisions
         var positionDamping = Common.clamp(20 / engine.positionIterations, 0, 1);
@@ -252,6 +262,59 @@ var Body = require('../body/Body');
     Engine.clear = function(engine) {
         Pairs.clear(engine.pairs);
         Detector.clear(engine.detector);
+    };
+
+    /**
+     * Finds bodies that were present at the start of the update but have since
+     * been removed from the world (e.g. inside a `collisionStart` handler) and
+     * removes them from the detector and all pair structures immediately.
+     * This keeps the collision events fired in the current step, the pair
+     * cache and any world queries consistent with the removal.
+     * @private
+     * @method _reconcileRemovedBodies
+     * @param {engine} engine
+     * @param {body[]} bodiesAtStart All bodies present at the start of the update
+     */
+    Engine._reconcileRemovedBodies = function(engine, bodiesAtStart) {
+        var world = engine.world,
+            detector = engine.detector,
+            pairs = engine.pairs,
+            bodiesPresent = null,
+            removedBodies = [],
+            i;
+
+        for (i = 0; i < bodiesAtStart.length; i++) {
+            var body = bodiesAtStart[i];
+
+            // lazily build the current world body list, since the
+            // common case is that nothing was removed this step
+            if (bodiesPresent === null) {
+                bodiesPresent = Composite.allBodies(world);
+            }
+
+            if (Common.indexOf(bodiesPresent, body) === -1) {
+                removedBodies.push(body);
+            }
+        }
+
+        if (removedBodies.length === 0) {
+            return;
+        }
+
+        for (i = 0; i < removedBodies.length; i++) {
+            var removedBody = removedBodies[i],
+                detectorIndex = Common.indexOf(detector.bodies, removedBody);
+
+            if (detectorIndex !== -1) {
+                detector.bodies.splice(detectorIndex, 1);
+            }
+
+            Pairs.removeBody(pairs, removedBody);
+        }
+
+        // mark the world as modified so the detector body list is
+        // rebuilt from the world on the next update regardless
+        Composite.setModified(world, true, true, false);
     };
 
     /**
