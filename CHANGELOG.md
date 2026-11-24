@@ -1,3 +1,7 @@
+## Unreleased
+
+* added Matter.FixedStepSimulator, a pausable deterministic fixed-timestep simulator with read-only render interpolation
+
 ## 0.20.0 (2024-06-23)
 
 * added event passive options to Matter.Mouse, closes #930, closes #976 ([e888f3c](https://github.com/liabru/matter-js/commit/e888f3c)), closes [#930](https://github.com/liabru/matter-js/issues/930) [#976](https://github.com/liabru/matter-js/issues/976)

@@ -13,6 +13,7 @@ Matter.Contact = require('../collision/Contact');
 Matter.Detector = require('../collision/Detector');
 Matter.Engine = require('../core/Engine');
 Matter.Events = require('../core/Events');
+Matter.FixedStepSimulator = require('../core/FixedStepSimulator');
 Matter.Grid = require('../collision/Grid');
 Matter.Mouse = require('../core/Mouse');
 Matter.MouseConstraint = require('../constraint/MouseConstraint');
